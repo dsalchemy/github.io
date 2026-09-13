@@ -1,0 +1,1047 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Stock Command Center</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Alpine.js CDN -->
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans p-4 md:p-6" x-data="commandCenter()" x-init="init()">
+
+    <div class="max-w-7xl mx-auto space-y-6">
+
+        <!-- Header & Status Bar -->
+        <div class="flex flex-col md:flex-row justify-between items-start md:items-center border-b border-slate-800 pb-4 gap-4">
+            <div>
+                <h1 class="text-2xl font-bold tracking-tight text-white flex items-center gap-2">
+                    <span>⚡</span> Live Stock Command Center
+                </h1>
+                <p class="text-xs text-slate-400 mt-1 flex items-center gap-2 flex-wrap">
+                    <span class="flex items-center gap-1.5">
+                        <span class="w-2 h-2 rounded-full"
+                              :class="wsStatus === 'connected' ? 'bg-emerald-400 animate-pulse' : (wsStatus === 'connecting' ? 'bg-amber-400 animate-pulse' : 'bg-rose-500')"></span>
+                        <span class="font-semibold"
+                              :class="wsStatus === 'connected' ? 'text-emerald-400' : (wsStatus === 'connecting' ? 'text-amber-400' : 'text-rose-400')"
+                              x-text="wsStatus === 'connected' ? 'Live — streaming trades' : (wsStatus === 'connecting' ? 'Connecting…' : (apiKey ? 'Disconnected — reconnecting…' : 'Not connected'))"></span>
+                    </span>
+                    <span class="text-[10px] font-bold uppercase px-2 py-0.5 rounded-full"
+                          :class="sessionColorClass()"
+                          x-text="sessionLabel()"></span>
+                    <template x-if="apiKey">
+                        <span class="text-slate-500 flex items-center gap-2">
+                            <span class="text-slate-700">|</span>
+                            Finnhub real-time feed
+                        </span>
+                    </template>
+                </p>
+                <p class="text-[10px] text-slate-600 mt-1" x-show="apiKey && marketSession() !== 'regular'">
+                    Trade prints outside 9:30am–4pm ET are sparse on the free real-time feed — prices may lag or hold at the last print.
+                </p>
+            </div>
+            <div class="flex items-center gap-2">
+                <template x-if="!apiKey">
+                    <div class="flex flex-col items-end gap-1">
+                        <div class="flex items-center gap-2">
+                            <input
+                                type="password"
+                                x-model="apiKeyInput"
+                                @keydown.enter="saveApiKey()"
+                                placeholder="Paste your free Finnhub API key…"
+                                class="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-emerald-500 w-64"
+                            >
+                            <button
+                                @click="saveApiKey()"
+                                class="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-4 py-2 rounded-lg transition shadow-lg shadow-emerald-950/55 whitespace-nowrap"
+                            >
+                                Connect
+                            </button>
+                        </div>
+                        <a href="https://finnhub.io/register" target="_blank" class="text-[10px] text-slate-500 hover:text-emerald-400 underline">Get a free key at finnhub.io/register</a>
+                    </div>
+                </template>
+                <template x-if="apiKey">
+                    <div class="flex items-center gap-2">
+                        <button
+                            @click="manualRefresh()"
+                            class="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-4 py-2 rounded-lg transition shadow-lg shadow-emerald-950/55 flex items-center gap-1.5"
+                        >
+                            <span>🔄</span> Refresh Snapshot
+                        </button>
+                        <button
+                            @click="changeApiKey()"
+                            class="text-slate-500 hover:text-rose-400 text-xs font-medium px-3 py-2 border border-slate-800 rounded-lg"
+                            title="Disconnect and change key"
+                        >
+                            Disconnect
+                        </button>
+                    </div>
+                </template>
+            </div>
+        </div>
+
+        <!-- Pre-Market Hot List -->
+        <div class="bg-slate-900 rounded-xl border border-orange-900/40 p-6 space-y-4">
+            <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-3">
+                <div>
+                    <h2 class="text-sm font-bold text-white flex items-center gap-2"><span>🔥</span> Pre-Market Hot List</h2>
+                    <p class="text-xs text-slate-400 mt-1 max-w-xl">
+                        Scans a curated universe of <span x-text="hotListUniverse.length"></span> liquid & historically volatile tickers for moves of
+                        <span class="text-orange-400 font-semibold" x-text="hotListThreshold + '%+'"></span> vs. last close.
+                        Free-tier rate limits mean a full pass takes a few minutes and only reflects tickers where a trade has actually printed.
+                        This isn't literally every stock on the market — for full-market coverage you'd need a paid screener feed.
+                    </p>
+                </div>
+                <div class="flex items-center gap-2 flex-wrap justify-end">
+                    <select x-model.number="hotListThreshold" class="bg-slate-950 border border-slate-700 rounded-lg px-2 py-2 text-xs text-slate-200 focus:outline-none focus:border-orange-500">
+                        <option :value="5">5%+</option>
+                        <option :value="10">10%+</option>
+                        <option :value="15">15%+</option>
+                        <option :value="20">20%+</option>
+                    </select>
+                    <button
+                        @click="runHotListScan()"
+                        :disabled="hotListScanning || !apiKey"
+                        class="bg-orange-600 hover:bg-orange-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-semibold px-4 py-2 rounded-lg transition whitespace-nowrap"
+                        x-text="hotListScanning ? '⏳ Scanning…' : '🔍 Scan Now'"
+                    ></button>
+                </div>
+            </div>
+
+            <label class="flex items-center gap-1.5 text-[10px] text-slate-400" x-show="apiKey">
+                <input type="checkbox" x-model="hotListAutoScan" class="accent-orange-500">
+                Auto-scan every 10 min while pre-market is active
+            </label>
+
+            <div x-show="hotListScanning" class="space-y-1">
+                <p class="text-[11px] text-slate-500">Scanning <span x-text="hotListProgress"></span> / <span x-text="hotListUniverse.length"></span> tickers…</p>
+                <div class="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
+                    <div class="bg-orange-500 h-full transition-all duration-500" :style="'width: ' + (hotListProgress / hotListUniverse.length * 100) + '%'"></div>
+                </div>
+            </div>
+
+            <template x-if="!apiKey">
+                <p class="text-xs text-slate-500">Connect your Finnhub API key above to scan for movers.</p>
+            </template>
+
+            <template x-if="apiKey && !hotListScanning && hotListResults.length === 0 && hotListLastScan">
+                <p class="text-xs text-slate-500">No tickers in the scan universe moved <span x-text="hotListThreshold"></span>%+ as of the last scan.</p>
+            </template>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3" x-show="hotListResults.length > 0">
+                <template x-for="hit in hotListResults" :key="hit.ticker">
+                    <div class="bg-slate-950 border border-orange-900/50 rounded-lg p-3 flex items-center justify-between gap-2">
+                        <p class="text-xs font-mono font-bold text-orange-400" x-text="hit.ticker"></p>
+                        <div class="text-right">
+                            <p class="text-sm font-bold text-white font-mono" x-text="'$' + formatMoney(hit.price)"></p>
+                            <p class="text-xs font-bold text-emerald-400" x-text="'+' + hit.changePercent + '%'"></p>
+                        </div>
+                        <button @click="addFromHotList(hit)" class="text-[10px] bg-slate-800 hover:bg-emerald-700 text-slate-300 hover:text-white px-2 py-1 rounded whitespace-nowrap" title="Add to tracked list">+ Track</button>
+                    </div>
+                </template>
+            </div>
+
+            <p class="text-[10px] text-slate-600" x-show="hotListLastScan" x-text="'Last scanned: ' + hotListLastScan"></p>
+        </div>
+
+        <!-- Dynamic Stock Cards Grid -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+            <template x-for="stock in stocks" :key="stock.id">
+                <div @click="selectedStockId = stock.id; fetchNewsFor(stock)"
+                     class="bg-slate-900 p-4 rounded-xl border transition-all cursor-pointer shadow-sm relative overflow-hidden group"
+                     :class="selectedStockId === stock.id ? 'border-emerald-500 ring-1 ring-emerald-500/50 bg-slate-900/90' : 'border-slate-800 hover:border-slate-700'">
+
+                    <div class="flex justify-between items-center">
+                        <span class="text-xs font-mono font-bold text-emerald-400 px-1.5 py-0.5 bg-slate-950 rounded border border-slate-800" x-text="stock.ticker ? stock.ticker.toUpperCase() : '---'"></span>
+                        <span class="text-[10px] uppercase tracking-wider font-semibold"
+                              :class="stock.change >= 0 ? 'text-emerald-400' : 'text-rose-400'"
+                              x-text="(stock.change >= 0 ? '+' : '') + stock.changePercent + '%'"></span>
+                    </div>
+
+                    <p class="text-lg font-extrabold text-white mt-2 font-mono transition-colors duration-700 rounded px-1 -mx-1"
+                       :class="stock.flash === 'up' ? 'bg-emerald-500/20' : (stock.flash === 'down' ? 'bg-rose-500/20' : '')"
+                       x-text="stock.price > 0 ? '$' + formatMoney(stock.price) : (apiKey ? 'Loading…' : '—')"></p>
+                    <p class="text-[11px] text-slate-400 truncate mt-0.5" x-text="stock.name || 'Unnamed Asset'"></p>
+                    <div class="flex items-center gap-1.5 mt-1 h-3">
+                        <p class="text-[9px] text-slate-600" x-show="stock.lastUpdate" x-text="'Updated ' + Math.max(0, Math.round((now - stock.lastUpdate)/1000)) + 's ago'"></p>
+                        <span class="text-[8px] font-bold uppercase px-1 rounded" x-show="marketSession() !== 'regular'" :class="sessionColorClass()" x-text="sessionLabel()"></span>
+                    </div>
+
+                    <div class="mt-2 pt-2 border-t border-slate-800/80 flex justify-between items-center text-[10px]">
+                        <span class="text-slate-400">Predictability:</span>
+                        <span class="font-bold uppercase"
+                              :class="stock.predictability === 'High' ? 'text-emerald-400' : (stock.predictability === 'Medium' ? 'text-amber-400' : 'text-rose-400')"
+                              x-text="stock.predictability"></span>
+                    </div>
+                </div>
+            </template>
+        </div>
+
+        <!-- Detailed Workspace: Selected Stock Focus -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+            <!-- Left 2 Columns: Stock Deep-Dive, Metrics & Search Manager -->
+            <div class="lg:col-span-2 space-y-6">
+
+                <!-- Main Asset Control Card -->
+                <div class="bg-slate-900 rounded-xl border border-slate-800 p-6 space-y-4">
+                    <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-2 border-b border-slate-800 pb-4">
+                        <div>
+                            <div class="flex items-center gap-2">
+                                <h2 class="text-lg font-bold text-white" x-text="getActiveStock().name"></h2>
+                                <span class="text-xs font-mono bg-emerald-950 text-emerald-400 px-2 py-0.5 rounded border border-emerald-900" x-text="getActiveStock().ticker.toUpperCase()"></span>
+                            </div>
+                            <p class="text-xs text-slate-400 mt-0.5">Live Market Feed & Behavioral Analysis</p>
+                        </div>
+                        <div class="text-right">
+                            <p class="text-2xl font-extrabold font-mono text-white transition-colors duration-700 rounded px-1 -mx-1"
+                               :class="getActiveStock().flash === 'up' ? 'bg-emerald-500/20' : (getActiveStock().flash === 'down' ? 'bg-rose-500/20' : '')"
+                               x-text="getActiveStock().price > 0 ? '$' + formatMoney(getActiveStock().price) : '$0.00'"></p>
+                            <p class="text-xs font-medium"
+                               :class="getActiveStock().change >= 0 ? 'text-emerald-400' : 'text-rose-400'"
+                               x-text="(getActiveStock().change >= 0 ? '+' : '') + formatMoney(getActiveStock().change) + ' (' + getActiveStock().changePercent + '%)'"></p>
+                            <span class="inline-block text-[9px] font-bold uppercase px-1.5 py-0.5 rounded mt-1" x-show="marketSession() !== 'regular'" :class="sessionColorClass()" x-text="sessionLabel() + ' vs. last close'"></span>
+                        </div>
+                    </div>
+
+                    <!-- Technical Metrics Matrix -->
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                        <div class="bg-slate-950 p-3 rounded-lg border border-slate-800">
+                            <p class="text-[10px] text-slate-400 uppercase">Trend Alignment</p>
+                            <p class="text-sm font-bold text-slate-200 mt-1" x-text="getActiveStock().metrics.trend"></p>
+                        </div>
+                        <div class="bg-slate-950 p-3 rounded-lg border border-slate-800">
+                            <p class="text-[10px] text-slate-400 uppercase">Volatility Index</p>
+                            <p class="text-sm font-bold text-amber-400 mt-1" x-text="getActiveStock().metrics.volatility"></p>
+                        </div>
+                        <div class="bg-slate-950 p-3 rounded-lg border border-slate-800">
+                            <p class="text-[10px] text-slate-400 uppercase">Session Low</p>
+                            <p class="text-sm font-bold text-emerald-400 mt-1" x-text="'$' + getActiveStock().metrics.support"></p>
+                        </div>
+                        <div class="bg-slate-950 p-3 rounded-lg border border-slate-800">
+                            <p class="text-[10px] text-slate-400 uppercase">Session High</p>
+                            <p class="text-sm font-bold text-rose-400 mt-1" x-text="'$' + getActiveStock().metrics.resistance"></p>
+                        </div>
+                    </div>
+
+                    <!-- Predictability Breakdown -->
+                    <div class="bg-slate-950/80 p-4 rounded-lg border border-slate-800 space-y-2">
+                        <p class="text-xs font-semibold text-emerald-400 flex items-center gap-1.5">
+                            <span>🧠</span> Predictability Synthesis & Probability Analysis
+                        </p>
+                        <p class="text-xs text-slate-300 leading-relaxed" x-text="getActiveStock().predictabilityNote"></p>
+                    </div>
+                </div>
+
+                <!-- Ticker Search Box & Asset Manager -->
+                <div class="bg-slate-900 rounded-xl border border-slate-800 p-6 space-y-4">
+                    <div>
+                        <h3 class="text-sm font-semibold text-white">Search & Add New Ticker</h3>
+                        <p class="text-xs text-slate-400">Type any stock symbol below to subscribe to its live trade feed.</p>
+                    </div>
+
+                    <!-- Search Input Bar -->
+                    <div class="flex gap-2 bg-slate-950 p-3 rounded-lg border border-slate-800">
+                        <div class="flex-1">
+                            <input
+                                type="text"
+                                x-model="searchQuery"
+                                @keydown.enter="searchAndAddTicker()"
+                                placeholder="Type Ticker Symbol (e.g. AMZN, META, GOOGL, NFLX)..."
+                                class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-emerald-400 font-mono font-bold uppercase focus:outline-none focus:border-emerald-500 placeholder:text-slate-600 placeholder:font-normal placeholder:normal-case"
+                            >
+                        </div>
+                        <button
+                            @click="searchAndAddTicker()"
+                            class="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-5 py-2 rounded-lg transition shadow-md shadow-emerald-950/50 flex items-center gap-1.5 whitespace-nowrap"
+                        >
+                            <span>🔍</span> Search & Add
+                        </button>
+                    </div>
+
+                    <!-- Existing Tracked Tickers List -->
+                    <div class="pt-2 border-t border-slate-800 space-y-2.5">
+                        <p class="text-xs font-medium text-slate-400 uppercase tracking-wider">Currently Tracked Assets</p>
+                        <template x-for="(stock, index) in stocks" :key="stock.id">
+                            <div class="flex items-center gap-3 bg-slate-950 p-3 rounded-lg border border-slate-800">
+                                <div class="w-24">
+                                    <label class="text-[9px] text-slate-500 uppercase block">Ticker</label>
+                                    <input type="text" x-model="stock.ticker" @focus="stock._prevTicker = stock.ticker" @change="saveAndFetchSingle(stock, stock._prevTicker)" class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-emerald-400 font-mono font-bold uppercase focus:outline-none focus:border-emerald-500">
+                                </div>
+                                <div class="flex-1">
+                                    <label class="text-[9px] text-slate-500 uppercase block">Asset Name</label>
+                                    <input type="text" x-model="stock.name" @change="saveData()" class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-emerald-500">
+                                </div>
+                                <div class="w-32">
+                                    <label class="text-[9px] text-slate-500 uppercase block">Predictability</label>
+                                    <select x-model="stock.predictability" @change="saveData()" class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-emerald-500">
+                                        <option value="High">High</option>
+                                        <option value="Medium">Medium</option>
+                                        <option value="Low">Low</option>
+                                    </select>
+                                </div>
+                                <div class="pt-3">
+                                    <button @click="removeStock(index)" class="text-slate-500 hover:text-rose-400 font-bold px-2 py-1 text-base" title="Remove Ticker">×</button>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Right Column: Live News Stream for Selected Stock -->
+            <div class="bg-slate-900 rounded-xl border border-slate-800 p-6 flex flex-col h-full space-y-4">
+                <div class="flex justify-between items-center border-b border-slate-800 pb-3">
+                    <div>
+                        <h3 class="text-sm font-bold text-white flex items-center gap-2">
+                            <span>📰</span> Live News Stream
+                        </h3>
+                        <p class="text-[11px] text-slate-400" x-text="'Recent headlines for ' + getActiveStock().ticker.toUpperCase()"></p>
+                    </div>
+                    <span class="text-[10px] bg-slate-950 text-emerald-400 px-2 py-0.5 rounded border border-slate-800 font-mono" x-text="getActiveStock().ticker.toUpperCase()"></span>
+                </div>
+
+                <!-- News Feed Item List -->
+                <div class="space-y-3 overflow-y-auto max-h-[520px] pr-1">
+                    <template x-if="!apiKey">
+                        <p class="text-xs text-slate-500 py-6 text-center">Connect your API key to load real headlines.</p>
+                    </template>
+                    <template x-if="apiKey && newsLoading">
+                        <p class="text-xs text-slate-500 py-6 text-center">Loading headlines…</p>
+                    </template>
+                    <template x-if="apiKey && !newsLoading && currentNewsList.length === 0">
+                        <p class="text-xs text-slate-500 py-6 text-center">No recent headlines found for this ticker.</p>
+                    </template>
+                    <template x-for="news in currentNewsList" :key="news.id">
+                        <div class="bg-slate-950 p-3.5 rounded-lg border border-slate-800/80 hover:border-slate-700 transition space-y-1.5">
+                            <div class="flex justify-between items-center text-[10px] text-slate-500">
+                                <span class="text-emerald-400 font-semibold" x-text="news.source"></span>
+                                <span x-text="news.time"></span>
+                            </div>
+                            <h4 class="text-xs font-semibold text-slate-200 leading-snug" x-text="news.title"></h4>
+                            <p class="text-[11px] text-slate-400 leading-normal" x-text="news.snippet"></p>
+                            <div class="flex justify-end items-center pt-1">
+                                <a :href="news.url" target="_blank" rel="noopener" class="text-[10px] text-emerald-400 hover:underline">Read Full Story →</a>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </div>
+
+        </div>
+
+    </div>
+
+    <!-- Investments: 401(k)/Retirement Contribution Tracker -->
+    <div class="max-w-7xl mx-auto space-y-6 mt-10" x-data="investmentTracker()" x-init="init()">
+
+        <div class="border-b border-slate-800 pb-4">
+            <h1 class="text-2xl font-bold tracking-tight text-white flex items-center gap-2">
+                <span>💼</span> Investments
+            </h1>
+            <p class="text-xs text-slate-400 mt-0.5">Retirement Account Contributions & Allocation</p>
+        </div>
+
+        <!-- Summary Cards -->
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div class="bg-slate-900 rounded-xl border border-slate-800 p-4">
+                <p class="text-[10px] text-slate-400 uppercase">My Contributions</p>
+                <p class="text-xl font-extrabold font-mono text-white mt-1" x-text="'$' + formatMoney(totalMine())"></p>
+            </div>
+            <div class="bg-slate-900 rounded-xl border border-slate-800 p-4">
+                <p class="text-[10px] text-slate-400 uppercase">Employer Contributions</p>
+                <p class="text-xl font-extrabold font-mono text-white mt-1" x-text="'$' + formatMoney(totalEmployer())"></p>
+            </div>
+            <div class="bg-slate-900 rounded-xl border border-slate-800 p-4">
+                <p class="text-[10px] text-slate-400 uppercase">Total Account Value</p>
+                <p class="text-xl font-extrabold font-mono text-emerald-400 mt-1" x-text="'$' + formatMoney(totalAll())"></p>
+            </div>
+        </div>
+
+        <!-- Add Contribution Card -->
+        <div class="bg-slate-900 rounded-xl border border-slate-800 p-6 space-y-4">
+            <div class="flex justify-between items-start flex-wrap gap-2">
+                <div>
+                    <h3 class="text-sm font-semibold text-white">Add a New Contribution</h3>
+                    <p class="text-xs text-slate-400">Enter what came out of your paycheck (and any employer match) — it's split across your funds automatically using the target allocation below.</p>
+                </div>
+                <button @click="editingAllocation = !editingAllocation" class="text-xs text-slate-400 hover:text-emerald-400 border border-slate-800 rounded-lg px-3 py-1.5 whitespace-nowrap" x-text="editingAllocation ? 'Done Editing' : 'Edit Target Allocation'"></button>
+            </div>
+
+            <div class="flex flex-wrap items-end gap-3 bg-slate-950 p-4 rounded-lg border border-slate-800">
+                <div>
+                    <label class="text-[10px] text-slate-500 uppercase block mb-1">Your Contribution</label>
+                    <input type="number" step="0.01" min="0" x-model.number="newMine" placeholder="0.00" class="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-emerald-400 font-mono w-36 focus:outline-none focus:border-emerald-500">
+                </div>
+                <div>
+                    <label class="text-[10px] text-slate-500 uppercase block mb-1">Employer Match</label>
+                    <input type="number" step="0.01" min="0" x-model.number="newEmployer" placeholder="0.00" class="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-emerald-400 font-mono w-36 focus:outline-none focus:border-emerald-500">
+                </div>
+                <button @click="addContribution()" class="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-5 py-2.5 rounded-lg transition shadow-lg shadow-emerald-950/55 h-[38px]">Add & Allocate</button>
+                <p class="text-[11px] text-emerald-400 ml-auto" x-show="lastAllocationNote" x-text="lastAllocationNote"></p>
+            </div>
+
+            <div x-show="editingAllocation" class="flex justify-between text-[10px] text-slate-500 uppercase px-1 pt-1">
+                <span>Your Target % totals: <span :class="Math.abs(mineTargetSum() - 100) < 0.5 ? 'text-emerald-400' : 'text-rose-400'" x-text="mineTargetSum().toFixed(1) + '%'"></span></span>
+                <span>Employer Target % totals: <span :class="Math.abs(employerTargetSum() - 100) < 0.5 ? 'text-emerald-400' : 'text-rose-400'" x-text="employerTargetSum().toFixed(1) + '%'"></span></span>
+            </div>
+        </div>
+
+        <!-- Holdings by Category -->
+        <div class="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden">
+            <template x-for="cat in categories" :key="cat.name">
+                <div class="border-b border-slate-800 last:border-b-0">
+                    <div class="bg-slate-950/60 px-5 py-2.5">
+                        <p class="text-xs font-bold text-emerald-400 uppercase tracking-wide" x-text="cat.name"></p>
+                    </div>
+                    <div class="divide-y divide-slate-800/60">
+                        <template x-for="fund in fundsIn(cat.name)" :key="fund.id">
+                            <div class="px-5 py-3">
+                                <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+                                    <p class="text-sm font-semibold text-slate-200" x-text="fund.name"></p>
+                                    <div class="grid grid-cols-4 gap-4 text-right text-xs font-mono w-full md:w-auto">
+                                        <div><p class="text-[9px] text-slate-500 uppercase font-sans">Mine</p><p class="text-slate-200" x-text="'$' + formatMoney(fund.mine)"></p></div>
+                                        <div><p class="text-[9px] text-slate-500 uppercase font-sans">Employer</p><p class="text-slate-200" x-text="'$' + formatMoney(fund.employer)"></p></div>
+                                        <div><p class="text-[9px] text-slate-500 uppercase font-sans">Total</p><p class="text-white font-bold" x-text="'$' + formatMoney(fund.mine + fund.employer)"></p></div>
+                                        <div><p class="text-[9px] text-slate-500 uppercase font-sans">%</p><p class="text-amber-400" x-text="pctOfTotal(fund).toFixed(2) + '%'"></p></div>
+                                    </div>
+                                </div>
+                                <div x-show="editingAllocation" class="flex items-center gap-4 mt-2">
+                                    <div class="flex items-center gap-1.5">
+                                        <label class="text-[9px] text-slate-500 uppercase">Your Target %</label>
+                                        <input type="number" step="0.01" min="0" max="100" x-model.number="fund.mineTargetPct" @change="saveData()" class="w-16 bg-slate-950 border border-slate-700 rounded px-1.5 py-0.5 text-[11px] text-emerald-400 font-mono focus:outline-none focus:border-emerald-500">
+                                    </div>
+                                    <div class="flex items-center gap-1.5">
+                                        <label class="text-[9px] text-slate-500 uppercase">Employer Target %</label>
+                                        <input type="number" step="0.01" min="0" max="100" x-model.number="fund.employerTargetPct" @change="saveData()" class="w-16 bg-slate-950 border border-slate-700 rounded px-1.5 py-0.5 text-[11px] text-emerald-400 font-mono focus:outline-none focus:border-emerald-500">
+                                    </div>
+                                </div>
+                            </div>
+                        </template>
+                        <div class="px-5 py-2.5 bg-slate-950/40 flex justify-between text-[11px] font-bold text-slate-300">
+                            <span>Sub-Total</span>
+                            <span class="font-mono" x-text="'$' + formatMoney(categoryTotal(cat.name)) + '  (' + categoryPct(cat.name).toFixed(2) + '%)'"></span>
+                        </div>
+                    </div>
+                </div>
+            </template>
+            <div class="px-5 py-3 bg-slate-950 flex justify-between text-sm font-extrabold text-white border-t-2 border-slate-800">
+                <span>Total</span>
+                <span class="font-mono" x-text="'$' + formatMoney(totalAll()) + '  (100.00%)'"></span>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Application Controller Logic -->
+    <script>
+        function commandCenter() {
+            return {
+                apiKey: '',
+                apiKeyInput: '',
+                ws: null,
+                wsStatus: 'disconnected', // disconnected | connecting | connected
+                reconnectTimer: null,
+                reconnectDelay: 2000,
+                snapshotTimer: null,
+                clockTimer: null,
+                now: Date.now(),
+                searchQuery: '',
+                selectedStockId: 1,
+                newsLoading: false,
+                stocks: [
+                    { id: 1, ticker: 'AAPL', name: 'Apple Inc.', price: 0, change: 0, changePercent: '0.00', previousClose: 0, high: 0, low: 0, open: 0, lastUpdate: null, flash: null, predictability: 'High', metrics: { volatility: 'Low-Mod', trend: 'Scanning', support: '0.00', resistance: '0.00' }, predictabilityNote: 'Connect your API key to load live telemetry for this asset.' },
+                    { id: 2, ticker: 'MSFT', name: 'Microsoft Corporation', price: 0, change: 0, changePercent: '0.00', previousClose: 0, high: 0, low: 0, open: 0, lastUpdate: null, flash: null, predictability: 'High', metrics: { volatility: 'Low', trend: 'Scanning', support: '0.00', resistance: '0.00' }, predictabilityNote: 'Connect your API key to load live telemetry for this asset.' },
+                    { id: 3, ticker: 'NVDA', name: 'NVIDIA Corporation', price: 0, change: 0, changePercent: '0.00', previousClose: 0, high: 0, low: 0, open: 0, lastUpdate: null, flash: null, predictability: 'Medium', metrics: { volatility: 'High', trend: 'Scanning', support: '0.00', resistance: '0.00' }, predictabilityNote: 'Connect your API key to load live telemetry for this asset.' }
+                ],
+                currentNewsList: [],
+
+                // Pre-Market Hot List
+                hotListThreshold: 5,
+                hotListScanning: false,
+                hotListProgress: 0,
+                hotListResults: [],
+                hotListLastScan: '',
+                hotListAutoScan: false,
+                hotListAutoTimer: null,
+                hotListUniverse: [
+                    'AAPL','MSFT','GOOGL','AMZN','META','NVDA','TSLA','AVGO','ORCL','CRM','ADBE','AMD','INTC','CSCO','QCOM','TXN','IBM','NOW','UBER','SHOP',
+                    'MU','AMAT','LRCX','KLAC','ASML','TSM','ARM','SMCI','DELL','HPQ','PANW','CRWD','ZS','NET','DDOG','SNOW','PLTR','SOUN','BBAI','AI',
+                    'JPM','BAC','WFC','C','GS','MS','SCHW','AXP','V','MA','PYPL','SQ','SOFI','AFRM','COIN','HOOD','MARA','RIOT','HUT','CLSK',
+                    'XOM','CVX','OXY','DVN','SLB','HAL','COP','MPC','PSX','VLO',
+                    'JNJ','PFE','UNH','LLY','MRK','ABBV','BMY','GILD','AMGN','VRTX','MRNA','NVAX','BNTX','SAVA','OCGN','INO','VXRT','CRSP','EDIT','NTLA','BEAM',
+                    'WMT','TGT','COST','HD','LOW','NKE','SBUX','MCD','CMG','LULU','ROST','DG','DLTR',
+                    'BA','CAT','GE','HON','LMT','RTX','DE','UPS','FDX','UNP',
+                    'RIVN','LCID','NIO','XPEV','LI','FSR','CHPT','PLUG','FCEL','ENPH','SEDG','RUN','FSLR',
+                    'GME','AMC','BB','TLRY','CGC','ACB','SNDL','RKLB','SPCE',
+                    'AAL','UAL','DAL','LUV','CCL','RCL','NCLH',
+                    'BABA','JD','PDD','BIDU','NFLX','DIS','WBD','PARA','ROKU',
+                    'F','GM','TM','HMC','RIVN','ABNB','BKNG','EXPE',
+                    'T','VZ','TMUS','CMCSA',
+                    'PG','KO','PEP','MO','PM','CL','KMB',
+                    'CVS','WBA','CI','HUM','ELV'
+                ],
+
+                init() {
+                    const savedStocks = localStorage.getItem('command_center_real_stocks');
+                    if (savedStocks) {
+                        try {
+                            const parsed = JSON.parse(savedStocks);
+                            if (Array.isArray(parsed) && parsed.length > 0) {
+                                this.stocks = parsed.map(s => ({
+                                    previousClose: 0, high: 0, low: 0, open: 0, lastUpdate: null, flash: null,
+                                    ...s
+                                }));
+                            }
+                        } catch (e) {}
+                    }
+                    if (!this.stocks.some(s => s.id === this.selectedStockId)) {
+                        this.selectedStockId = this.stocks[0].id;
+                    }
+
+                    // Live "updated Xs ago" ticker
+                    this.clockTimer = setInterval(() => { this.now = Date.now(); }, 1000);
+
+                    const savedKey = localStorage.getItem('finnhub_api_key');
+                    if (savedKey) {
+                        this.apiKey = savedKey;
+                        this.connectAndLoad();
+                    }
+                },
+
+                saveData() {
+                    localStorage.setItem('command_center_real_stocks', JSON.stringify(
+                        this.stocks.map(({ _prevTicker, ...rest }) => rest)
+                    ));
+                },
+
+                saveApiKey() {
+                    const key = this.apiKeyInput.trim();
+                    if (!key) return;
+                    this.apiKey = key;
+                    localStorage.setItem('finnhub_api_key', key);
+                    this.apiKeyInput = '';
+                    this.connectAndLoad();
+                },
+
+                changeApiKey() {
+                    this.disconnectWs();
+                    clearInterval(this.snapshotTimer);
+                    clearInterval(this.hotListAutoTimer);
+                    this.apiKey = '';
+                    localStorage.removeItem('finnhub_api_key');
+                },
+
+                async connectAndLoad() {
+                    // De-dupe the scan universe in case of overlapping sector lists.
+                    this.hotListUniverse = Array.from(new Set(this.hotListUniverse));
+
+                    await Promise.all(this.stocks.map(s => this.fetchQuoteAndProfile(s)));
+                    this.saveData();
+                    this.fetchNewsFor(this.getActiveStock());
+                    this.connectWebSocket();
+
+                    // Safety-net REST refresh every 60s in addition to instant WS ticks,
+                    // so session high/low/metrics stay accurate even between trades.
+                    clearInterval(this.snapshotTimer);
+                    this.snapshotTimer = setInterval(() => {
+                        this.stocks.forEach(s => this.fetchQuoteAndProfile(s));
+                    }, 60000);
+
+                    // Hot List auto-scan check, every 10 min, only fires during pre-market.
+                    clearInterval(this.hotListAutoTimer);
+                    this.hotListAutoTimer = setInterval(() => {
+                        if (this.hotListAutoScan && !this.hotListScanning && this.marketSession() === 'pre') {
+                            this.runHotListScan();
+                        }
+                    }, 10 * 60000);
+                },
+
+                connectWebSocket() {
+                    if (!this.apiKey) return;
+                    this.wsStatus = 'connecting';
+                    try {
+                        this.ws = new WebSocket(`wss://ws.finnhub.io?token=${this.apiKey}`);
+                    } catch (e) {
+                        this.wsStatus = 'disconnected';
+                        this.scheduleReconnect();
+                        return;
+                    }
+
+                    this.ws.onopen = () => {
+                        this.wsStatus = 'connected';
+                        this.reconnectDelay = 2000;
+                        this.stocks.forEach(s => this.subscribe(s.ticker));
+                    };
+
+                    this.ws.onmessage = (event) => {
+                        try {
+                            const msg = JSON.parse(event.data);
+                            if (msg.type === 'trade' && Array.isArray(msg.data)) {
+                                msg.data.forEach(trade => this.applyTrade(trade));
+                            }
+                        } catch (e) {}
+                    };
+
+                    this.ws.onerror = () => {};
+
+                    this.ws.onclose = () => {
+                        this.wsStatus = 'disconnected';
+                        this.scheduleReconnect();
+                    };
+                },
+
+                scheduleReconnect() {
+                    if (!this.apiKey) return;
+                    clearTimeout(this.reconnectTimer);
+                    this.reconnectTimer = setTimeout(() => {
+                        this.reconnectDelay = Math.min(this.reconnectDelay * 1.5, 30000);
+                        this.connectWebSocket();
+                    }, this.reconnectDelay);
+                },
+
+                disconnectWs() {
+                    clearTimeout(this.reconnectTimer);
+                    if (this.ws) {
+                        this.ws.onclose = null;
+                        this.ws.close();
+                        this.ws = null;
+                    }
+                    this.wsStatus = 'disconnected';
+                },
+
+                subscribe(ticker) {
+                    if (this.ws && this.ws.readyState === WebSocket.OPEN && ticker) {
+                        this.ws.send(JSON.stringify({ type: 'subscribe', symbol: ticker.toUpperCase() }));
+                    }
+                },
+
+                unsubscribe(ticker) {
+                    if (this.ws && this.ws.readyState === WebSocket.OPEN && ticker) {
+                        this.ws.send(JSON.stringify({ type: 'unsubscribe', symbol: ticker.toUpperCase() }));
+                    }
+                },
+
+                applyTrade(trade) {
+                    const stock = this.stocks.find(s => s.ticker && s.ticker.toUpperCase() === trade.s);
+                    if (!stock) return;
+                    const newPrice = trade.p;
+                    const prevPrice = stock.price;
+
+                    stock.price = Number(newPrice.toFixed(2));
+                    if (stock.previousClose) {
+                        const diff = newPrice - stock.previousClose;
+                        stock.change = Number(diff.toFixed(2));
+                        stock.changePercent = ((diff / stock.previousClose) * 100).toFixed(2);
+                    }
+                    if (!stock.high || newPrice > stock.high) stock.high = newPrice;
+                    if (!stock.low || newPrice < stock.low) stock.low = newPrice;
+                    stock.metrics.support = stock.low.toFixed(2);
+                    stock.metrics.resistance = stock.high.toFixed(2);
+
+                    stock.lastUpdate = Date.now();
+                    stock.flash = newPrice > prevPrice ? 'up' : (newPrice < prevPrice ? 'down' : stock.flash);
+                    clearTimeout(stock._flashTimer);
+                    stock._flashTimer = setTimeout(() => { stock.flash = null; }, 900);
+
+                    this.saveData();
+                },
+
+                async fetchQuoteAndProfile(stock) {
+                    if (!stock.ticker || !this.apiKey) return;
+                    const ticker = stock.ticker.trim().toUpperCase();
+                    try {
+                        const [quoteRes, profileRes] = await Promise.all([
+                            fetch(`https://finnhub.io/api/v1/quote?symbol=${ticker}&token=${this.apiKey}`),
+                            fetch(`https://finnhub.io/api/v1/stock/profile2?symbol=${ticker}&token=${this.apiKey}`)
+                        ]);
+                        const quote = await quoteRes.json();
+                        const profile = await profileRes.json();
+
+                        if (quote && (quote.c || quote.pc)) {
+                            stock.price = Number((quote.c || 0).toFixed(2));
+                            stock.previousClose = quote.pc || 0;
+                            stock.high = quote.h || stock.price;
+                            stock.low = quote.l || stock.price;
+                            stock.open = quote.o || stock.price;
+
+                            const diff = quote.d != null ? quote.d : (stock.price - stock.previousClose);
+                            stock.change = Number((diff || 0).toFixed(2));
+                            stock.changePercent = quote.dp != null
+                                ? quote.dp.toFixed(2)
+                                : (stock.previousClose ? ((diff / stock.previousClose) * 100).toFixed(2) : '0.00');
+
+                            stock.metrics.support = (stock.low || stock.price).toFixed(2);
+                            stock.metrics.resistance = (stock.high || stock.price).toFixed(2);
+
+                            const rangePct = stock.price ? (((stock.high - stock.low) / stock.price) * 100) : 0;
+                            stock.metrics.volatility = rangePct > 4 ? 'High' : (rangePct > 1.5 ? 'Moderate' : 'Low');
+                            stock.metrics.trend = stock.price >= stock.open ? 'Above Open' : 'Below Open';
+                            stock.predictabilityNote = `Session range: $${stock.low.toFixed(2)} – $${stock.high.toFixed(2)} (${rangePct.toFixed(1)}% spread). Currently trading ${stock.metrics.trend === 'Above Open' ? 'above' : 'below'} today's open of $${stock.open.toFixed(2)}.`;
+
+                            stock.lastUpdate = Date.now();
+                        }
+                        if (profile && profile.name) {
+                            stock.name = profile.name;
+                        }
+                    } catch (err) {
+                        console.warn(`Live pull failed for ${ticker}:`, err);
+                    }
+                },
+
+                manualRefresh() {
+                    this.stocks.forEach(s => this.fetchQuoteAndProfile(s));
+                    this.saveData();
+                },
+
+                // Scans hotListUniverse in batches to respect Finnhub's free-tier
+                // rate limit (60 calls/min), flagging anything moved >= hotListThreshold%
+                // vs. its previous close. Only reflects tickers with an actual trade print.
+                async runHotListScan() {
+                    if (!this.apiKey || this.hotListScanning) return;
+                    this.hotListScanning = true;
+                    this.hotListProgress = 0;
+                    const hits = [];
+                    const batchSize = 55; // leave headroom under the 60/min cap
+                    const universe = this.hotListUniverse;
+
+                    for (let i = 0; i < universe.length; i += batchSize) {
+                        const batch = universe.slice(i, i + batchSize);
+                        const results = await Promise.all(batch.map(async (sym) => {
+                            try {
+                                const res = await fetch(`https://finnhub.io/api/v1/quote?symbol=${sym}&token=${this.apiKey}`);
+                                const q = await res.json();
+                                if (q && q.pc) {
+                                    const changePct = ((q.c - q.pc) / q.pc) * 100;
+                                    return { ticker: sym, price: q.c, changePercent: changePct.toFixed(2), raw: changePct };
+                                }
+                            } catch (e) {}
+                            return null;
+                        }));
+
+                        results.forEach(r => {
+                            if (r && r.raw >= this.hotListThreshold) hits.push(r);
+                        });
+
+                        this.hotListProgress = Math.min(i + batchSize, universe.length);
+
+                        if (i + batchSize < universe.length) {
+                            await new Promise(resolve => setTimeout(resolve, 61000));
+                        }
+                    }
+
+                    hits.sort((a, b) => b.raw - a.raw);
+                    this.hotListResults = hits;
+                    this.hotListLastScan = new Date().toLocaleTimeString();
+                    this.hotListScanning = false;
+                },
+
+                addFromHotList(hit) {
+                    if (this.stocks.some(s => s.ticker.toUpperCase() === hit.ticker)) {
+                        alert(`${hit.ticker} is already tracked.`);
+                        return;
+                    }
+                    const newId = Date.now();
+                    const newStock = {
+                        id: newId,
+                        ticker: hit.ticker,
+                        name: `${hit.ticker} Equity`,
+                        price: 0, change: 0, changePercent: '0.00',
+                        previousClose: 0, high: 0, low: 0, open: 0, lastUpdate: null, flash: null,
+                        predictability: 'Medium',
+                        metrics: { volatility: 'High', trend: 'Scanning', support: '0.00', resistance: '0.00' },
+                        predictabilityNote: `Added from the Hot List after a +${hit.changePercent}% move.`
+                    };
+                    this.stocks.push(newStock);
+                    this.selectedStockId = newId;
+                    this.saveData();
+                    this.fetchQuoteAndProfile(newStock).then(() => {
+                        this.subscribe(hit.ticker);
+                        this.saveData();
+                    });
+                },
+
+                async searchAndAddTicker() {
+                    const sym = this.searchQuery.trim().toUpperCase();
+                    if (!sym) return;
+                    if (!this.apiKey) {
+                        alert('Connect your free Finnhub API key first.');
+                        return;
+                    }
+                    if (this.stocks.some(s => s.ticker.toUpperCase() === sym)) {
+                        alert(`Ticker ${sym} is already in your command center.`);
+                        this.searchQuery = '';
+                        return;
+                    }
+
+                    try {
+                        const res = await fetch(`https://finnhub.io/api/v1/quote?symbol=${sym}&token=${this.apiKey}`);
+                        const data = await res.json();
+                        if (!data || (data.c === 0 && data.pc === 0)) {
+                            alert(`Could not find ticker ${sym}.`);
+                            return;
+                        }
+                    } catch (e) {
+                        alert('Could not reach Finnhub. Check your connection or API key.');
+                        return;
+                    }
+
+                    const newId = Date.now();
+                    const newStock = {
+                        id: newId,
+                        ticker: sym,
+                        name: `${sym} Equity`,
+                        price: 0, change: 0, changePercent: '0.00',
+                        previousClose: 0, high: 0, low: 0, open: 0, lastUpdate: null, flash: null,
+                        predictability: 'Medium',
+                        metrics: { volatility: 'Moderate', trend: 'Scanning', support: '0.00', resistance: '0.00' },
+                        predictabilityNote: `Live telemetry initializing for ${sym}.`
+                    };
+
+                    this.stocks.push(newStock);
+                    this.selectedStockId = newId;
+                    this.searchQuery = '';
+                    this.saveData();
+
+                    await this.fetchQuoteAndProfile(newStock);
+                    this.subscribe(sym);
+                    this.fetchNewsFor(newStock);
+                    this.saveData();
+                },
+
+                removeStock(index) {
+                    if (this.stocks.length <= 1) {
+                        alert('You must keep at least one active ticker in your command center.');
+                        return;
+                    }
+                    const [removed] = this.stocks.splice(index, 1);
+                    this.unsubscribe(removed.ticker);
+                    this.selectedStockId = this.stocks[0].id;
+                    this.fetchNewsFor(this.stocks[0]);
+                    this.saveData();
+                },
+
+                saveAndFetchSingle(stock, oldTicker) {
+                    if (oldTicker && oldTicker !== stock.ticker) this.unsubscribe(oldTicker);
+                    this.saveData();
+                    this.fetchQuoteAndProfile(stock).then(() => {
+                        this.subscribe(stock.ticker);
+                        this.saveData();
+                    });
+                },
+
+                getActiveStock() {
+                    return this.stocks.find(s => s.id === this.selectedStockId) || this.stocks[0];
+                },
+
+                async fetchNewsFor(stock) {
+                    const t = stock && stock.ticker ? stock.ticker.toUpperCase() : '';
+                    this.currentNewsList = [];
+                    if (!t || !this.apiKey) return;
+
+                    this.newsLoading = true;
+                    try {
+                        const to = new Date();
+                        const from = new Date();
+                        from.setDate(to.getDate() - 5);
+                        const fmt = (d) => d.toISOString().split('T')[0];
+
+                        const res = await fetch(`https://finnhub.io/api/v1/company-news?symbol=${t}&from=${fmt(from)}&to=${fmt(to)}&token=${this.apiKey}`);
+                        const data = await res.json();
+                        if (Array.isArray(data)) {
+                            this.currentNewsList = data.slice(0, 6).map(n => ({
+                                id: n.id,
+                                source: n.source || 'News',
+                                time: this.timeAgo(n.datetime),
+                                title: n.headline,
+                                snippet: n.summary,
+                                url: n.url
+                            }));
+                        }
+                    } catch (e) {
+                        console.warn('News fetch failed', e);
+                    } finally {
+                        this.newsLoading = false;
+                    }
+                },
+
+                timeAgo(unixSeconds) {
+                    if (!unixSeconds) return '';
+                    const diffMs = Date.now() - unixSeconds * 1000;
+                    const mins = Math.floor(diffMs / 60000);
+                    if (mins < 60) return `${mins}m ago`;
+                    const hrs = Math.floor(mins / 60);
+                    if (hrs < 24) return `${hrs}h ago`;
+                    return `${Math.floor(hrs / 24)}d ago`;
+                },
+
+                formatMoney(val) {
+                    return Number(val || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                },
+
+                // Returns 'pre' | 'regular' | 'after' | 'closed' based on real US Eastern Time.
+                // Reads this.now (ticked every second) so it stays reactive in the template.
+                marketSession() {
+                    const parts = new Intl.DateTimeFormat('en-US', {
+                        timeZone: 'America/New_York',
+                        hour12: false,
+                        weekday: 'short',
+                        hour: '2-digit',
+                        minute: '2-digit'
+                    }).formatToParts(new Date(this.now));
+
+                    const map = {};
+                    parts.forEach(p => { map[p.type] = p.value; });
+                    if (map.weekday === 'Sat' || map.weekday === 'Sun') return 'closed';
+
+                    const minutesSinceMidnight = parseInt(map.hour, 10) * 60 + parseInt(map.minute, 10);
+                    const preStart = 4 * 60;          // 4:00 AM ET
+                    const regularStart = 9 * 60 + 30; // 9:30 AM ET
+                    const regularEnd = 16 * 60;        // 4:00 PM ET
+                    const afterEnd = 20 * 60;          // 8:00 PM ET
+
+                    if (minutesSinceMidnight >= preStart && minutesSinceMidnight < regularStart) return 'pre';
+                    if (minutesSinceMidnight >= regularStart && minutesSinceMidnight < regularEnd) return 'regular';
+                    if (minutesSinceMidnight >= regularEnd && minutesSinceMidnight < afterEnd) return 'after';
+                    return 'closed';
+                },
+
+                sessionLabel() {
+                    const s = this.marketSession();
+                    return s === 'pre' ? 'Pre-Market' : s === 'after' ? 'After-Hours' : s === 'closed' ? 'Market Closed' : 'Market Open';
+                },
+
+                sessionColorClass() {
+                    const s = this.marketSession();
+                    if (s === 'pre') return 'bg-amber-950 text-amber-400 border border-amber-900';
+                    if (s === 'after') return 'bg-blue-950 text-blue-400 border border-blue-900';
+                    if (s === 'closed') return 'bg-slate-900 text-slate-500 border border-slate-800';
+                    return 'bg-emerald-950 text-emerald-400 border border-emerald-900';
+                }
+            }
+        }
+
+        function investmentTracker() {
+            return {
+                editingAllocation: false,
+                newMine: null,
+                newEmployer: null,
+                lastAllocationNote: '',
+                categories: [
+                    { name: 'Target Date' },
+                    { name: 'Aggressive Growth' },
+                    { name: 'Growth' }
+                ],
+                funds: [
+                    { id: 1, category: 'Target Date', name: 'American Funds 2045 TD', mine: 0, employer: 2267.55 },
+                    { id: 2, category: 'Aggressive Growth', name: 'Fidelity Advisor Energy Fund', mine: 327.19, employer: 83.67 },
+                    { id: 3, category: 'Aggressive Growth', name: 'Fidelity NASDAQ Composite Idx', mine: 1413.12, employer: 318.93 },
+                    { id: 4, category: 'Aggressive Growth', name: 'JPMorgan Large Cap Growth', mine: 621.02, employer: 134.28 },
+                    { id: 5, category: 'Aggressive Growth', name: 'Nuveen Large-Cap Growth Index', mine: 426.58, employer: 92.77 },
+                    { id: 6, category: 'Aggressive Growth', name: 'Science & Technology Fund', mine: 945.29, employer: 246.73 },
+                    { id: 7, category: 'Aggressive Growth', name: 'Vanguard Mid-Cap Growth ETF', mine: 223.65, employer: 48.86 },
+                    { id: 8, category: 'Aggressive Growth', name: 'Vanguard Small Cap Grow Index', mine: 247.79, employer: 56.72 },
+                    { id: 9, category: 'Growth', name: '500 Index Fund', mine: 467.92, employer: 105.16 }
+                ],
+
+                init() {
+                    const saved = localStorage.getItem('investment_portfolio');
+                    if (saved) {
+                        try {
+                            const parsed = JSON.parse(saved);
+                            if (Array.isArray(parsed) && parsed.length > 0) this.funds = parsed;
+                        } catch (e) {}
+                    }
+
+                    // Seed target allocation % from the current dollar ratio, for any fund
+                    // that doesn't already have a target set (e.g. first run, or a newly added fund).
+                    const totalMineNow = this.funds.reduce((s, f) => s + f.mine, 0);
+                    const totalEmployerNow = this.funds.reduce((s, f) => s + f.employer, 0);
+                    this.funds.forEach(f => {
+                        if (f.mineTargetPct === undefined) {
+                            f.mineTargetPct = totalMineNow > 0 ? Number(((f.mine / totalMineNow) * 100).toFixed(2)) : 0;
+                        }
+                        if (f.employerTargetPct === undefined) {
+                            f.employerTargetPct = totalEmployerNow > 0 ? Number(((f.employer / totalEmployerNow) * 100).toFixed(2)) : 0;
+                        }
+                    });
+                    this.saveData();
+                },
+
+                saveData() {
+                    localStorage.setItem('investment_portfolio', JSON.stringify(this.funds));
+                },
+
+                fundsIn(catName) {
+                    return this.funds.filter(f => f.category === catName);
+                },
+
+                totalMine() { return this.funds.reduce((s, f) => s + f.mine, 0); },
+                totalEmployer() { return this.funds.reduce((s, f) => s + f.employer, 0); },
+                totalAll() { return this.totalMine() + this.totalEmployer(); },
+
+                categoryTotal(catName) {
+                    return this.fundsIn(catName).reduce((s, f) => s + f.mine + f.employer, 0);
+                },
+                categoryPct(catName) {
+                    const total = this.totalAll();
+                    return total ? (this.categoryTotal(catName) / total * 100) : 0;
+                },
+                pctOfTotal(fund) {
+                    const total = this.totalAll();
+                    return total ? ((fund.mine + fund.employer) / total * 100) : 0;
+                },
+
+                mineTargetSum() { return this.funds.reduce((s, f) => s + (f.mineTargetPct || 0), 0); },
+                employerTargetSum() { return this.funds.reduce((s, f) => s + (f.employerTargetPct || 0), 0); },
+
+                addContribution() {
+                    const mineAmt = Number(this.newMine) || 0;
+                    const employerAmt = Number(this.newEmployer) || 0;
+                    if (mineAmt <= 0 && employerAmt <= 0) {
+                        alert('Enter an amount to contribute.');
+                        return;
+                    }
+
+                    const mineSum = this.mineTargetSum();
+                    const employerSum = this.employerTargetSum();
+
+                    if (mineAmt > 0 && Math.abs(mineSum - 100) > 0.5) {
+                        if (!confirm(`Your target allocation adds up to ${mineSum.toFixed(1)}%, not 100%. Continue anyway? Funds will be split proportionally to whatever you've set.`)) return;
+                    }
+                    if (employerAmt > 0 && Math.abs(employerSum - 100) > 0.5) {
+                        if (!confirm(`Your employer target allocation adds up to ${employerSum.toFixed(1)}%, not 100%. Continue anyway?`)) return;
+                    }
+
+                    let fundsTouched = 0;
+                    this.funds.forEach(f => {
+                        let touched = false;
+                        if (mineAmt > 0 && mineSum > 0 && f.mineTargetPct > 0) {
+                            f.mine = Number((f.mine + mineAmt * (f.mineTargetPct / mineSum)).toFixed(2));
+                            touched = true;
+                        }
+                        if (employerAmt > 0 && employerSum > 0 && f.employerTargetPct > 0) {
+                            f.employer = Number((f.employer + employerAmt * (f.employerTargetPct / employerSum)).toFixed(2));
+                            touched = true;
+                        }
+                        if (touched) fundsTouched++;
+                    });
+
+                    this.saveData();
+                    this.lastAllocationNote = `Added $${(mineAmt + employerAmt).toFixed(2)} across ${fundsTouched} fund${fundsTouched === 1 ? '' : 's'}.`;
+                    this.newMine = null;
+                    this.newEmployer = null;
+                    setTimeout(() => { this.lastAllocationNote = ''; }, 6000);
+                },
+
+                formatMoney(val) {
+                    return Number(val || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                }
+            }
+        }
+    </script>
+</body>
+</html>
